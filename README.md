@@ -131,6 +131,35 @@ bash run_residual.sh
 - The encoder must be frozen during training (`--freeze_encoder`, the paper recipe): `my_train.py` does not save encoder weights. Solar and PEMS are not supported (no `date` column).
 - Built-in checks: the splits are contiguous, $Z_Y$ matches the point-wise encoding of the series (MLP AE), and the decoded test MSE/MAE is printed; it equals `my_train.py`'s test metrics when training used `--step 1`.
 
+### 5. Meta-correction in the residual space (498R-kdd style)
+
+A meta-corrector $f_\phi$ learns the residual series of step 4 and corrects the forecaster in latent space before decoding:
+
+$$
+\hat{Y} = \mathcal{D}\big(\hat{Z}_Y - \alpha \, f_\phi(\mathcal{R}_{t-L_m:t})\big)
+$$
+
+At a forecast origin $t$, $f_\phi$ reads only the residuals of the previous $L_m$ steps, which are known by then (earlier forecasts minus truths that have already been observed). With the same `dataset` / `model` / `pred_len` in all three scripts:
+
+```bash
+bash run_train.sh && bash run_residual.sh && bash run_meta.sh
+```
+
+- **Splits** follow the forecaster's: $f_\phi$ trains on the residuals of the train period, early-stops on the validation period and is tested on the test period, where its windows match the forecaster's test windows one-to-one.
+- **$f_\phi$** mirrors the forecaster (same backbone, `seq_len` and hyperparameters) and is trained with the Huber loss on residuals standardized with train statistics. Change it with `meta_args` at the top of `run_meta.sh`, e.g. `meta_args="model=iTransformer seq_len=96 d_model=128"`, and the loss with `meta_loss`.
+- **$\alpha$** is chosen on the validation split from $\{0, 0.05, \dots, 1\}$ (`--alpha_grid`). The test results are reported at that $\alpha$, at the paper's $\alpha = 0.05$ and at $\alpha = 0$, the forecaster alone (checked against step 4).
+
+Outputs go to `./residuals/<model_id>/meta_<loss>[_<overrides>]/`:
+
+| File | Content |
+| --- | --- |
+| `checkpoint.pth` | best $f_\phi$ |
+| `alpha_sweep.csv` | $\alpha$ vs. validation / test MSE, MAE (decoded, scaled as in `my_train.py`) and latent MSE |
+| `meta_info.json` | configs, training history, chosen $\alpha$, before/after table, checks |
+| `test_{base_pred,final_pred,true}_<P>.npy` | decoded test forecasts before / after correction and the truth, shape (windows, P, C); skip with `--save_final_npy 0` |
+
+`--meta_train 0` re-evaluates a saved $f_\phi$ without training it again.
+
 ## Pretrained AE Checkpoints
 
 The `./checkpoints/` directory ships with the 9 pretrained MLP autoencoders used in the paper. All AEs are trained with `seq_len=24`, `ae_type=MLP`, `ae_loss=MAE`, `lradj=0`.
@@ -159,10 +188,12 @@ LatentTSF/
 ├── my_MAE.py               # Masked autoencoder (optional encoder type)
 ├── my_utils.py             # Args, valid/test loops, CSV logging
 ├── my_residual.py          # Latent residual series of a trained forecaster (498R-kdd style)
+├── my_meta.py              # Meta-correction of the forecaster in the residual space
 ├── RevIN.py                # RevIN normalization
 ├── run_train.sh            # Single-example training (one dataset × model × horizon)
 ├── run_train_all.sh        # Full sweep training (lists of datasets × models × horizons)
 ├── run_residual.sh         # Residual series for the run_train.sh example (same settings)
+├── run_meta.sh             # Meta-correction for the run_train.sh example (same settings)
 ├── run_ae.sh               # Train AE from scratch (defaults = ETTh1 paper config)
 ├── run.py                  # Standard TSLib entry point (baselines, etc.)
 ├── download_datasets.py    # Fetch benchmarks from HuggingFace
