@@ -430,11 +430,15 @@ if __name__ == "__main__":
         print(f"  - Environment WANDB_PROJECT: {os.environ.get('WANDB_PROJECT', 'NOT SET')}")
         print(f"  - Default project name: {default_project_name}")
 
+        try:
+            wandb_settings = wandb.Settings(start_method="thread")
+        except (TypeError, ValueError):  # recent wandb removed start_method (threads are its default)
+            wandb_settings = None
         wandb.init(
             project=wandb_project,
             name=setting,
             config=wandb_config,
-            settings=wandb.Settings(start_method="thread")
+            settings=wandb_settings
         )
 
         if args.use_multi_gpu and args.use_gpu:
