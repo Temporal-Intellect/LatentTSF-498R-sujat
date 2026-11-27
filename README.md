@@ -166,6 +166,34 @@ Outputs go to `./residuals/<model_id>/meta_<loss>[_<overrides>]/`:
 
 `--meta_train 0` re-evaluates a saved $f_\phi$ without training it again.
 
+### 6. Table 7 sweep with meta-correction
+
+`run_table7_meta.py` runs every experiment of the paper's Table 7 through steps 1, 4 and 5. That is 6 datasets (ETTm1, ETTm2, ETTh1, ETTh2, Traffic, Electricity) × 6 backbones (CMoS, DLinear, PatchTST, TimeBase, TimeXer, iTransformer) × 4 horizons, or 144 cells. Each cell trains the LatentTSF forecaster (`run_train.sh`), builds its residual series (`run_residual.sh`) and trains $f_\phi$ with the same backbone (`run_meta.sh`). The paper's own columns are not rerun.
+
+```bash
+python run_table7_meta.py --dry_run                                   # list the cells and their commands
+python run_table7_meta.py --datasets ETTh1 --models DLinear --pred_lens 96 \
+                          --extra="--train_epochs 1" --out_dir sweeps/smoke   # quick check of the whole chain
+python run_table7_meta.py --max_hours 10                              # one 12-hour Kaggle session
+```
+
+- **Storage** (Kaggle allows 19.5 GB): the sweep never writes the per-window arrays (`--save_window_npy 0`, `--save_final_npy 0`), which would reach several GB per array on Traffic and Electricity. After each cell it deletes the residual CSVs and the $f_\phi$ checkpoint. It keeps the forecaster checkpoints (about 1.2 GB for all 144 cells; change with `--keep none` or `--keep all`) and small files. A cell needs about 1.5 GB at its peak. A new cell starts only while the disk used under `/kaggle/working` (or the repository) stays below `--disk_limit_gb` minus `--disk_margin_gb` (19.5 and 3 GB).
+- **Resuming:** rerun the same command. Finished cells are skipped, an interrupted cell restarts after its last finished stage, and failed cells are rerun with `--retry_failed`. Everything is in `sweeps/table7_meta/`, so to continue in a new Kaggle session, copy that folder back from the previous session's output first. You can also split the sweep across sessions with `--datasets`, then copy the `cells/` folders together and run `--collect_only` to rebuild the tables.
+- **Out of GPU memory:** PatchTST and TimeXer on Traffic or Electricity may not fit a 16 GB GPU at batch size 32. Rerun those cells with e.g. `--retry_failed --extra="--batch_size 8 --accum_steps 16"`, which keeps Traffic's effective batch of 128.
+- **Comparing numbers:** the +Meta columns and our LatentTSF column ($\alpha = 0$) use every test window. For Traffic and Electricity, `my_train.py` tests with `--step 60`, so its own metrics in `train_results.csv` (and possibly the paper's) come from fewer windows.
+
+Outputs go to `./sweeps/table7_meta/` (`--out_dir`):
+
+| File | Content |
+| --- | --- |
+| `results.csv` | one row per cell: status, val / test MSE and MAE at $\alpha = 0$, $0.05$ and $\alpha^*$, $\alpha^*$, run times, flags |
+| `table7_meta.md` | one table per backbone: LatentTSF ($\alpha = 0$), +Meta $\alpha = 0.05$, +Meta $\alpha^*$; best in bold |
+| `table7_meta.tex` | Table 7's layout with the two meta-corrected column groups per backbone |
+| `cells/<cell>/` | `status.json`, `meta_info.json`, `alpha_sweep.csv`, `residual_info.json`, the three stage logs |
+| `checkpoints/` | forecaster checkpoints |
+
+`python run_table7_meta.py --help` lists every option. Use `--extra="..."` (with `=`) for flags passed to all three scripts and `--meta_extra="..."` for `run_meta.sh` only.
+
 ## Pretrained AE Checkpoints
 
 The `./checkpoints/` directory ships with the 9 pretrained MLP autoencoders used in the paper. All AEs are trained with `seq_len=24`, `ae_type=MLP`, `ae_loss=MAE`, `lradj=0`.
@@ -200,6 +228,7 @@ LatentTSF/
 ├── run_train_all.sh        # Full sweep training (lists of datasets × models × horizons)
 ├── run_residual.sh         # Residual series for the run_train.sh example (same settings)
 ├── run_meta.sh             # Meta-correction for the run_train.sh example (same settings)
+├── run_table7_meta.py      # Table 7 sweep: train -> residual -> meta for 144 cells, disk-aware
 ├── run_ae.sh               # Train AE from scratch (defaults = ETTh1 paper config)
 ├── run.py                  # Standard TSLib entry point (baselines, etc.)
 ├── download_datasets.py    # Fetch benchmarks from HuggingFace

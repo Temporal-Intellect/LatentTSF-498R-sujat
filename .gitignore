@@ -191,3 +191,5 @@ embeddings_good_base/*
 logs/*
 # Latent residual series (my_residual.py)
 residuals/
+# Table 7 sweep outputs (run_table7_meta.py)
+sweeps/
