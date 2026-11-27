@@ -192,7 +192,7 @@ Outputs go to `./sweeps/table7_meta/` (`--out_dir`):
 | `cells/<cell>/` | `status.json`, `meta_info.json`, `alpha_sweep.csv`, `residual_info.json`, the three stage logs |
 | `checkpoints/` | forecaster checkpoints |
 
-`python run_table7_meta.py --help` lists every option. Use `--extra="..."` (with `=`) for flags passed to all three scripts and `--meta_extra="..."` for `run_meta.sh` only.
+`python run_table7_meta.py --help` lists every option. Use `--extra="..."` (with `=`) for flags passed to all three scripts and `--meta_extra="..."` for `run_meta.sh` only. On a machine without an NVIDIA GPU, e.g. for a local smoke test, add `--gpu_type cpu` to `--extra`.
 
 ## Pretrained AE Checkpoints
 

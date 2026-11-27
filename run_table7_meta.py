@@ -80,7 +80,8 @@ EXAMPLES = """examples:
                             --extra="--batch_size 8 --accum_steps 16"   # rerun cells that ran out of GPU memory
   python run_table7_meta.py --collect_only     # rebuild results.csv and the tables
 
-Pass --extra / --meta_extra with "=", e.g. --extra="--train_epochs 1", so the value is not read as a flag."""
+Pass --extra / --meta_extra with "=", e.g. --extra="--train_epochs 1", so the value is not read as a flag.
+Without an NVIDIA GPU, add --gpu_type cpu to --extra (my_train.py does not fall back to the CPU by itself)."""
 
 
 # ----------------------------------------------------------------------------------------------- small helpers
