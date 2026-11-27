@@ -7,18 +7,60 @@
 #   - Perceptual & reconstruction losses are disabled by default (Sec. 5.3.1)
 #   - seq_len=720, lradj=cosine, AE pretrained with MAE loss (sl=24), frozen encoder+decoder
 #
-# To switch dataset / model / horizon, edit the variables in the "User-tunable" block.
-# For the full Table-1 sweep across 9 datasets × multiple models × {96, 192, 336, 720}
+# Choose dataset / model / horizon (and override any other setting) on the command line, e.g.
+#   bash run_train.sh --dataset ETTh2 --model iTransformer --pred_len 192
+# `bash run_train.sh --help` lists the options. For the full Table-1 sweep across 9 datasets × multiple models × {96, 192, 336, 720}
 # horizons, use run_train_all.sh instead.
 
-export CUDA_VISIBLE_DEVICES=0
-export WANDB_MODE=offline # or "online" / "disabled"
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+export WANDB_MODE="${WANDB_MODE:-offline}" # or "online" / "disabled"
 
-# ============ User-tunable ============
+# ============ User-tunable: defaults, override them on the command line ============
 dataset="ETTh1"
 model="DLinear"
 pred_len=96
-# ======================================
+# ====================================================================================
+
+usage() {
+  cat <<'EOF'
+Usage: bash run_train.sh [--dataset NAME] [--model NAME] [--pred_len N] [my_train.py flags ...]
+
+  --dataset NAME  ETTh1 (default), ETTh2, ETTm1, ETTm2, weather, exchange_rate, electricity, traffic, Solar
+  --model NAME    forecasting backbone, a key of model_dict in my_utils.py (default: DLinear)
+  --pred_len N    forecast horizon; the paper uses 96 (default), 192, 336 and 720
+
+Any other flag is passed to my_train.py after the paper settings in this script, so it overrides
+them, e.g. --learning_rate 0.001, --train_epochs 50, --seed 7 or --root_path /data/ETT-small/
+(python my_train.py --help lists them all). Give run_residual.sh and run_meta.sh the same flags:
+they find this run's checkpoint from them.
+
+Environment: CUDA_VISIBLE_DEVICES (default 0), WANDB_MODE (default offline; online or disabled).
+
+Examples:
+  bash run_train.sh
+  bash run_train.sh --dataset ETTh2 --model iTransformer --pred_len 192
+  bash run_train.sh --dataset weather --pred_len 336 --learning_rate 0.0005 --train_epochs 50
+  CUDA_VISIBLE_DEVICES=1 WANDB_MODE=online bash run_train.sh --dataset traffic --pred_len 720
+EOF
+}
+
+# --dataset / --model / --pred_len are read here; every other argument goes to my_train.py
+extra_args=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --dataset=*|--model=*|--pred_len=*) set -- "${1%%=*}" "${1#*=}" "${@:2}"; continue ;;
+    --dataset|--model|--pred_len)
+      if [ -z "$2" ] || [[ "$2" == --* ]]; then echo "ERROR: $1 needs a value (see --help)"; exit 1; fi
+      case "$1" in
+        --dataset) dataset="$2" ;;
+        --model) model="$2" ;;
+        --pred_len) pred_len="$2" ;;
+      esac
+      shift 2 ;;
+    *) extra_args+=("$1"); shift ;;
+  esac
+done
 
 # Per-dataset config (paper main recipe). Keys: dataset name.
 declare -A data_path
@@ -143,6 +185,15 @@ step_size["electricity"]=60
 step_size["traffic"]=60
 step_size["Solar"]=60
 
+if [ -z "${data_path[$dataset]}" ]; then
+  echo "ERROR: unsupported dataset '$dataset' (valid: ${!data_path[*]})"
+  exit 1
+fi
+if ! [[ "$pred_len" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ERROR: --pred_len must be a positive integer (got '$pred_len')"
+  exit 1
+fi
+
 # Compose the AE checkpoint path
 ae_seq_len=24
 ae_path="./checkpoints/AutoEncoder_MLP_MAE_${dataset}_AE_${data_name[$dataset]}_ftM_sl${ae_seq_len}_dm${ae_d_model[$dataset]}_dff${ae_d_ff[$dataset]}_lradj0_${ae_des[$dataset]}_0/checkpoint.pth"
@@ -159,6 +210,7 @@ echo "Model         : $model"
 echo "Pred length   : $pred_len"
 echo "AE checkpoint : $ae_path"
 echo "Loss weights  : mse_weight=10 (α), cosine_weight=15 (β), perceptual_weight=0, reconstruction_weight=0"
+echo "Extra flags   : ${extra_args[*]:-none}"
 echo "----------------------------------------------------------------"
 
 python -u my_train.py \
@@ -207,4 +259,5 @@ python -u my_train.py \
   --des Exp \
   --itr 1 \
   --result_csv result.csv \
-  --result_txt result/result.txt
+  --result_txt result/result.txt \
+  "${extra_args[@]}"

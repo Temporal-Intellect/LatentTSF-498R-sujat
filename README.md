@@ -69,13 +69,15 @@ python download_datasets.py
 
 The repository ships with 9 pretrained autoencoders (one per benchmark). Two entry points are provided — both share the same per-dataset configs and the paper's loss recipe ($\alpha=10$, $\beta=15$, no perceptual / reconstruction loss).
 
-**Single example** — `run_train.sh`. Just edit the three variables `dataset` / `model` / `pred_len` at the top, then:
+**Single example** — `run_train.sh`. Choose the dataset, model and horizon on the command line (`bash run_train.sh --help` lists the options):
 
 ```bash
-bash run_train.sh
+bash run_train.sh                                                    # ETTh1, DLinear, pred_len 96
+bash run_train.sh --dataset ETTh2 --model iTransformer --pred_len 192
+bash run_train.sh --dataset weather --pred_len 336 --learning_rate 0.0005 --train_epochs 50
 ```
 
-The default reproduces the DLinear / ETTh1 / `pred_len=96` cell of paper Table 1, using `checkpoints/AutoEncoder_MLP_MAE_ETTh1_..._sl24_..._0/checkpoint.pth`. The matching checkpoint paths for other datasets are in the [Pretrained AE Checkpoints](#pretrained-ae-checkpoints) table — `run_train.sh` resolves them automatically from the per-dataset config table.
+The default reproduces the DLinear / ETTh1 / `pred_len=96` cell of paper Table 1, using `checkpoints/AutoEncoder_MLP_MAE_ETTh1_..._sl24_..._0/checkpoint.pth`. The matching checkpoint paths for other datasets are in the [Pretrained AE Checkpoints](#pretrained-ae-checkpoints) table — `run_train.sh` resolves them automatically from the per-dataset config table. Any other flag (as in the last example) is passed to `my_train.py` after the paper settings and overrides them. `CUDA_VISIBLE_DEVICES` (default `0`) and `WANDB_MODE` (default `offline`) are read from the environment.
 
 **Full sweep** — `run_train_all.sh`. Set `datasets` / `models` / `pred_lens` (space-separated lists) at the top, then:
 
@@ -107,10 +109,11 @@ $$
 \mathcal{R} = \hat{Z}_Y - Z_Y = f_\theta\big(\mathcal{E}(X)\big) - \mathcal{E}(Y)
 $$
 
-i.e. prediction minus ground truth, using the frozen encoder $\mathcal{E}$ (`--autoencoder_path`) and the trained forecaster checkpoint. Set the same `dataset` / `model` / `pred_len` at the top of `run_residual.sh`, then:
+i.e. prediction minus ground truth, using the frozen encoder $\mathcal{E}$ (`--autoencoder_path`) and the trained forecaster checkpoint. Give `run_residual.sh` the same flags as `run_train.sh` (`bash run_residual.sh --help` lists its own options):
 
 ```bash
-bash run_residual.sh
+bash run_residual.sh                                                 # after the default run_train.sh
+bash run_residual.sh --dataset ETTh2 --model iTransformer --pred_len 192
 ```
 
 `my_residual.py` takes exactly the `my_train.py` flags (so it finds the same `./checkpoints/<setting>/checkpoint.pth`) and runs every train / val / test window in order with stride 1, whatever `--step` was used for training. Outputs go to `./residuals/<model_id>/`:
@@ -139,14 +142,17 @@ $$
 \hat{Y} = \mathcal{D}\big(\hat{Z}_Y - \alpha \, f_\phi(\mathcal{R}_{t-L_m:t})\big)
 $$
 
-At a forecast origin $t$, $f_\phi$ reads only the residuals of the previous $L_m$ steps, which are known by then (earlier forecasts minus truths that have already been observed). With the same `dataset` / `model` / `pred_len` in all three scripts:
+At a forecast origin $t$, $f_\phi$ reads only the residuals of the previous $L_m$ steps, which are known by then (earlier forecasts minus truths that have already been observed). Give all three scripts the same flags; `run_meta.sh` takes its own on top (`bash run_meta.sh --help`):
 
 ```bash
 bash run_train.sh && bash run_residual.sh && bash run_meta.sh
+
+args="--dataset ETTh2 --model iTransformer --pred_len 192"
+bash run_train.sh $args && bash run_residual.sh $args && bash run_meta.sh $args --meta_loss mse
 ```
 
 - **Splits** follow the forecaster's: $f_\phi$ trains on the residuals of the train period, early-stops on the validation period and is tested on the test period, where its windows match the forecaster's test windows one-to-one.
-- **$f_\phi$** mirrors the forecaster (same backbone, `seq_len` and hyperparameters) and is trained with the Huber loss on residuals standardized with train statistics. Change it with `meta_args` at the top of `run_meta.sh`, e.g. `meta_args="model=iTransformer seq_len=96 d_model=128"`, and the loss with `meta_loss`.
+- **$f_\phi$** mirrors the forecaster (same backbone, `seq_len` and hyperparameters) and is trained with the Huber loss on residuals standardized with train statistics. Change it with `--meta_args`, e.g. `bash run_meta.sh --meta_args model=iTransformer seq_len=96 d_model=128`, and the loss with `--meta_loss mse`.
 - **$\alpha$** is chosen on the validation split from $\{0, 0.05, \dots, 1\}$ (`--alpha_grid`). The test results are reported at that $\alpha$, at the paper's $\alpha = 0.05$ and at $\alpha = 0$, the forecaster alone (checked against step 4).
 
 Outputs go to `./residuals/<model_id>/meta_<loss>[_<overrides>]/`:

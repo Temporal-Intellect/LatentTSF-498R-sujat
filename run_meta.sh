@@ -3,22 +3,79 @@
 #   Y_hat = D( Ẑ_Y − alpha · f_phi(R[t − L_m : t]) ),   R = Ẑ_Y − Z_Y  (from run_residual.sh)
 # f_phi is trained on the residual series with the base model's splits, alpha is chosen on validation.
 #
-# Run order, all with the same dataset / model / pred_len:
+# Run order, all with the same command-line flags (`bash run_meta.sh --help`):
 #   bash run_train.sh  ->  bash run_residual.sh  ->  bash run_meta.sh
 # The python flags below must stay identical to run_train.sh: they locate the base checkpoint and residuals.
 # By default f_phi mirrors the base forecaster (same backbone, seq_len and hyperparameters); change it with
-# meta_args, e.g. meta_args="model=iTransformer seq_len=96 d_model=128".
+# --meta_args, e.g. bash run_meta.sh --meta_args model=iTransformer seq_len=96 d_model=128
 # Outputs go to ./residuals/<model_id>/meta_<loss>[_<overrides>]/ (see README, "Meta-correction").
 
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 
-# ============ User-tunable ============
+# ============ User-tunable: defaults, override them on the command line ============
 dataset="ETTh1"
 model="DLinear"
 pred_len=96
-meta_args=""      # optional overrides of the mirrored config, e.g. "model=iTransformer seq_len=96"
+meta_args=()      # overrides of f_phi's mirrored config, e.g. (model=iTransformer seq_len=96)
 meta_loss="huber" # huber (498R-kdd) or mse
-# ======================================
+# ====================================================================================
+
+usage() {
+  cat <<'EOF'
+Usage: bash run_meta.sh [--dataset NAME] [--model NAME] [--pred_len N]
+                        [--meta_args KEY=VALUE ...] [--meta_loss huber|mse] [flags ...]
+
+  --dataset NAME             ETTh1 (default), ETTh2, ETTm1, ETTm2, weather, exchange_rate, electricity, traffic
+  --model NAME               backbone of the forecaster trained by run_train.sh (default: DLinear)
+  --pred_len N               its forecast horizon (default: 96)
+  --meta_args KEY=VALUE ...  overrides of f_phi's config, which otherwise mirrors the forecaster, using
+                             my_train.py flag names (e.g. model=iTransformer seq_len=96 d_model=128)
+  --meta_loss huber|mse      training loss of f_phi (default: huber)
+
+Repeat every other flag you gave run_train.sh: the checkpoint and residuals are found from them.
+Other flags go to my_meta.py (python my_meta.py --help), which also takes:
+  --alpha_grid A,B,...    candidate alphas (default 0,0.05,...,1; 0 and 0.05 are always added)
+  --huber_delta D         Huber threshold (default 1.0)
+  --meta_train 0          evaluate the saved f_phi instead of training it again
+  --save_final_npy 0      skip the decoded test .npy files
+  --residual_dir DIR, --residual_name NAME   as given to run_residual.sh
+
+Environment: CUDA_VISIBLE_DEVICES (default 0).
+
+Examples:
+  bash run_meta.sh
+  bash run_meta.sh --dataset ETTh2 --model iTransformer --pred_len 192 --meta_loss mse
+  bash run_meta.sh --dataset weather --pred_len 336 --learning_rate 0.0005 --train_epochs 50 \
+                   --meta_args model=iTransformer seq_len=96 d_model=128
+  bash run_meta.sh --meta_train 0 --alpha_grid 0,0.02,0.05,0.1
+EOF
+}
+
+# --dataset / --model / --pred_len / --meta_args / --meta_loss are read here; every other argument goes to my_meta.py
+extra_args=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --dataset=*|--model=*|--pred_len=*|--meta_loss=*|--meta_args=*) set -- "${1%%=*}" "${1#*=}" "${@:2}"; continue ;;
+    --meta_args)  # every following KEY=VALUE word up to the next --flag; a quoted list is split too
+      shift
+      while [ $# -gt 0 ] && [[ "$1" != --* ]]; do
+        read -r -a words <<< "$1"
+        meta_args+=("${words[@]}")
+        shift
+      done ;;
+    --dataset|--model|--pred_len|--meta_loss)
+      if [ -z "$2" ] || [[ "$2" == --* ]]; then echo "ERROR: $1 needs a value (see --help)"; exit 1; fi
+      case "$1" in
+        --dataset) dataset="$2" ;;
+        --model) model="$2" ;;
+        --pred_len) pred_len="$2" ;;
+        --meta_loss) meta_loss="$2" ;;
+      esac
+      shift 2 ;;
+    *) extra_args+=("$1"); shift ;;
+  esac
+done
 
 # Per-dataset config (same as run_train.sh). Keys: dataset name.
 declare -A data_path
@@ -137,6 +194,18 @@ if [ -z "${data_path[$dataset]}" ]; then
   echo "ERROR: unsupported dataset '$dataset' (valid: ${!data_path[*]})"
   exit 1
 fi
+if ! [[ "$pred_len" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ERROR: --pred_len must be a positive integer (got '$pred_len')"
+  exit 1
+fi
+if [ "$meta_loss" != "huber" ] && [ "$meta_loss" != "mse" ]; then
+  echo "ERROR: --meta_loss must be huber or mse (got '$meta_loss')"
+  exit 1
+fi
+meta_flags=()
+if [ ${#meta_args[@]} -gt 0 ]; then
+  meta_flags=(--meta_args "${meta_args[@]}")
+fi
 
 # Compose the AE checkpoint path (same as run_train.sh)
 ae_seq_len=24
@@ -152,7 +221,8 @@ echo "Dataset       : $dataset"
 echo "Model         : $model"
 echo "Pred length   : $pred_len"
 echo "AE checkpoint : $ae_path"
-echo "Meta          : loss=$meta_loss  overrides=${meta_args:-none (mirrors the base model)}"
+echo "Meta          : loss=$meta_loss  overrides=${meta_args[*]:-none (mirrors the base model)}"
+echo "Extra flags   : ${extra_args[*]:-none}"
 echo "----------------------------------------------------------------"
 
 python -u my_meta.py \
@@ -205,4 +275,5 @@ python -u my_meta.py \
   --residual_dir ./residuals/ \
   --meta_loss "$meta_loss" \
   --save_final_npy 1 \
-  ${meta_args:+--meta_args $meta_args}
+  "${extra_args[@]}" \
+  "${meta_flags[@]}"
